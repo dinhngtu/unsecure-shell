@@ -21,7 +21,7 @@
 #include "readcmd.h"
 #include "sockdata.h"
 
-int cmdspawn(int epollfd, int sockfd, int clientfd, struct cmdline *cmd) {
+int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
     char ***seq = cmd->seq;
 
     if (!*(seq)) {
@@ -71,7 +71,7 @@ int cmdspawn(int epollfd, int sockfd, int clientfd, struct cmdline *cmd) {
         struct epoll_event tpopts = {0};
         tpopts.events = EPOLLIN | EPOLLRDHUP;
         unsh_socket *tpsock = newsock(tailpipe[0], (unsh_sockettype)SOCKETTYPE_PROC_OUT, true);
-        tpsock->sockaff.proc_out.clientfd = clientfd;
+        tpsock->sockaff.proc_out.clientsock = clientsock;
         tpopts.data.ptr = tpsock;
         // we only monitor output side of pipe for now
         // monitoring read side of pipe is not implemented yet
@@ -81,6 +81,8 @@ int cmdspawn(int epollfd, int sockfd, int clientfd, struct cmdline *cmd) {
             return -1;
         }
     }
+
+    clientsock->sockaff.client.haspipe = true;
 
     while (*seq) {
         char **current = *seq++;
@@ -164,7 +166,7 @@ int cmdspawn(int epollfd, int sockfd, int clientfd, struct cmdline *cmd) {
     return 0;
 }
 
-int handle_client_read(int epollfd, int sockfd, struct epoll_event event) {
+int handle_client_read(int epollfd, struct epoll_event event) {
     unsh_socket *sockdt = event.data.ptr;
     int fd = sockdt->fd;
     unsh_sockaff_client client = sockdt->sockaff.client;
@@ -178,14 +180,14 @@ int handle_client_read(int epollfd, int sockfd, struct epoll_event event) {
                 *lineptr++ = 0;
                 struct cmdline *cmd = readcmd(client.linebuf);
                 // luckily for us exec() won't mess up parent's epoll
-                if (cmdspawn(epollfd, sockfd, fd, cmd) == -1) {
+                if (cmdspawn(epollfd, sockdt, cmd) == -1) {
                     perror("command spawn failed");
                 }
-				break;
+                break;
             } else {
-				client.linelen++;
-				lineptr++;
-			}
+                client.linelen++;
+                lineptr++;
+            }
         }
         if (thisread == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             return 0;
@@ -193,8 +195,8 @@ int handle_client_read(int epollfd, int sockfd, struct epoll_event event) {
         return thisread;
 
     } else if (client.state == CLIENTSTATE_INPUT) {
-		return 0;
-		// NOTE: NOT IMPLEMENTED
+        return 0;
+        // NOTE: NOT IMPLEMENTED
         ssize_t thisread;
         char *buf = malloc(UNSH_BUFSIZE);
         // read from client socket and pump it to child stdin
@@ -216,11 +218,19 @@ int handle_proc_out_read(struct epoll_event event) {
     // TODO: use a constrained for loop rather than a while loop to avoid starving other fds
     unsh_socket *sockdt = event.data.ptr;
     assert(sockdt->socktype == SOCKETTYPE_PROC_OUT);
+
+    unsh_socket *clientsock = sockdt->sockaff.proc_out.clientsock;
+    assert(clientsock->socktype == SOCKETTYPE_CLIENT);
+    if (clientsock->sockaff.client.state == CLIENTSTATE_CLOSED) {
+        freesock(clientsock);
+        return 0;
+    }
+
     int fd = sockdt->fd;
     ssize_t thisread;
     char *buf = malloc(UNSH_BUFSIZE);
     while ((thisread = read(fd, buf, UNSH_BUFSIZE)) > 0) {
-        write(sockdt->sockaff.proc_out.clientfd, buf, thisread);
+        write(clientsock->fd, buf, thisread);
     }
     if (thisread == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
         return 0;
@@ -309,16 +319,16 @@ int main() {
 
             if (evcode & EPOLLERR) {
                 fprintf(stderr, "oops\n");
-				int sockerr;
-				size_t sockerrsize = sizeof(int);
-				if (getsockopt(sockdt->fd, SOL_SOCKET, SO_ERROR, &sockerr, (socklen_t *)&sockerrsize) == 0) {
-					error(0, sockerr, "fd error");
-				}
+                int sockerr;
+                size_t sockerrsize = sizeof(int);
+                if (getsockopt(sockdt->fd, SOL_SOCKET, SO_ERROR, &sockerr, (socklen_t *)&sockerrsize) == 0) {
+                    error(0, sockerr, "fd error");
+                }
                 if (sockdt->fd == sockfd) {
                     fprintf(stderr, "socket fd encountered unexpected error, quitting\n");
                     return 1;
                 }
-				epoll_ctl(epollfd, sockdt->fd, EPOLL_CTL_DEL, NULL);
+                epoll_ctl(epollfd, sockdt->fd, EPOLL_CTL_DEL, NULL);
                 close(sockdt->fd);
                 continue;
 
@@ -354,35 +364,38 @@ int main() {
                 }
 
             } else if (evcode & EPOLLHUP || evcode & EPOLLRDHUP) {
-				switch (sockdt->socktype) {
-					// beware: client fd may be closed before proc_out fd
-					// leading to failed flush to client
-					// very bad!
-					case SOCKETTYPE_CLIENT:
-						if (sockdt->sockaff.client.childpipe[0] >= 0) {
-							// pipeline input is not implemented yet
-							//close(sockdt->sockaff.client.childpipe[0]);
-							//close(sockdt->sockaff.client.childpipe[1]);
-						}
-						epoll_ctl(epollfd, sockdt->fd, EPOLL_CTL_DEL, NULL);
-						close(sockdt->fd);
-						break;
-					case SOCKETTYPE_PROC_OUT:
-						// pipeline output is done
-						// flush pipeline output to client first
+                switch (sockdt->socktype) {
+                    case SOCKETTYPE_CLIENT:
+                        if (sockdt->sockaff.client.childpipe[0] >= 0) {
+                            // pipeline input is not implemented yet
+                            //close(sockdt->sockaff.client.childpipe[0]);
+                            //close(sockdt->sockaff.client.childpipe[1]);
+                        }
+                        sockdt->sockaff.client.state = CLIENTSTATE_CLOSED;
+                        epoll_ctl(epollfd, sockdt->fd, EPOLL_CTL_DEL, NULL);
+                        close(sockdt->fd);
+                        if (!sockdt->sockaff.client.haspipe) {
+                            freesock(sockdt);
+                        }
+                        break;
+                    case SOCKETTYPE_PROC_OUT:
+                        // pipeline output is done
+                        // flush pipeline output to client first
+                        sockdt->sockaff.proc_out.clientsock->sockaff.client.haspipe = false;
                         handle_proc_out_read(events[ei]);
-						epoll_ctl(epollfd, sockdt->fd, EPOLL_CTL_DEL, NULL);
-						close(sockdt->fd);
-						break;
-					default:
-						//close(sockdt->fd);
-						break;
-				}
+                        epoll_ctl(epollfd, sockdt->fd, EPOLL_CTL_DEL, NULL);
+                        close(sockdt->fd);
+                        freesock(sockdt);
+                        break;
+                    default:
+                        //close(sockdt->fd);
+                        break;
+                }
 
             } else if (evcode & EPOLLIN) {
                 switch (sockdt->socktype) {
                     case SOCKETTYPE_CLIENT:
-                        handle_client_read(epollfd, sockfd, events[ei]);
+                        handle_client_read(epollfd, events[ei]);
                         break;
                     case SOCKETTYPE_PROC_IN:
                         // TODO?
