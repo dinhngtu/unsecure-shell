@@ -12,7 +12,7 @@ static const char *unsh_sockettype_strings[] = {
     "Client",
     "Proc-In",
     "Proc-Out",
-	"Signal"
+    "Signal"
 };
 
 unsh_socket *newsock(int fd, unsh_sockettype socktype, bool initialize) {

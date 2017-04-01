@@ -11,19 +11,19 @@ typedef enum unsh_sockettype {
     SOCKETTYPE_CLIENT,
     SOCKETTYPE_PROC_IN,
     SOCKETTYPE_PROC_OUT,
-	SOCKETTYPE_SIGNAL
+    SOCKETTYPE_SIGNAL
 } unsh_sockettype;
 
 typedef enum unsh_sockaff_client_state {
     CLIENTSTATE_UNKNOWN,
     CLIENTSTATE_COMMAND,
     CLIENTSTATE_INPUT,
-	CLIENTSTATE_CLOSED
+    CLIENTSTATE_CLOSED
 } unsh_sockaff_client_state;
 
 typedef struct unsh_sockaff_client {
     unsh_sockaff_client_state state;
-	bool haspipe;
+    bool haspipe;
     char *linebuf;
     size_t linelen;
     int childpipe[2];

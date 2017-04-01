@@ -312,14 +312,14 @@ int main() {
         return 1;
     }
 
-	// register signalfd
-	struct epoll_event sigopts = {0};
-	sigopts.events = EPOLLIN;
-	sigopts.data.ptr = newsock(sigfd, SOCKETTYPE_SIGNAL, true);
-	if (epoll_ctl(epollfd, EPOLL_CTL_ADD, sigfd, &sigopts) != 0) {
-		perror("cannot set sigfd events");
-		return 1;
-	}
+    // register signalfd
+    struct epoll_event sigopts = {0};
+    sigopts.events = EPOLLIN;
+    sigopts.data.ptr = newsock(sigfd, SOCKETTYPE_SIGNAL, true);
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, sigfd, &sigopts) != 0) {
+        perror("cannot set sigfd events");
+        return 1;
+    }
 
     while (1) {
         int pending = epoll_wait(epollfd, events, UNSH_MAXEVENTS, -1);
