@@ -57,7 +57,7 @@ int cmdspawn(int epollfd, int sockfd, int clientfd, struct cmdline *cmd) {
     }
 
     if (cmd->out) {
-        redirfd[1] = open(cmd->out, O_WRONLY | O_CREAT | O_TRUNC);
+        redirfd[1] = open(cmd->out, O_WRONLY | O_CREAT | O_TRUNC, 0666);
         if (redirfd[1] < 0) {
             perror("cannot open output file");
             return -1;
