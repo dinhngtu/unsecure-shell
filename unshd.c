@@ -248,11 +248,17 @@ int main() {
         perror("cannot initialize signal set");
         return 1;
     }
+    if (sigprocmask(SIG_BLOCK, &chs, NULL) != 0) {
+        perror("cannot mask signals");
+        return 1;
+    }
+
     int sigfd = signalfd(-1, &chs, SFD_NONBLOCK);
     if (sigfd < 0) {
         perror("error registering signalfd");
         return 1;
     }
+
     if (sigaddset(&chs, SIGPIPE) != 0) {
         perror("cannot initialize signal set");
         return 1;
@@ -306,6 +312,15 @@ int main() {
         return 1;
     }
 
+	// register signalfd
+	struct epoll_event sigopts = {0};
+	sigopts.events = EPOLLIN;
+	sigopts.data.ptr = newsock(sigfd, SOCKETTYPE_SIGNAL, true);
+	if (epoll_ctl(epollfd, EPOLL_CTL_ADD, sigfd, &sigopts) != 0) {
+		perror("cannot set sigfd events");
+		return 1;
+	}
+
     while (1) {
         int pending = epoll_wait(epollfd, events, UNSH_MAXEVENTS, -1);
         if (pending < 0) {
@@ -357,7 +372,7 @@ int main() {
 
             } else if (sockdt->fd == sigfd) {
                 struct signalfd_siginfo siginfo;
-                while (read(sigfd, &siginfo, sizeof(struct signalfd_siginfo)) > 0) {
+                while (read(sigfd, &siginfo, sizeof(struct signalfd_siginfo)) == sizeof(struct signalfd_siginfo)) {
                     if (siginfo.ssi_signo == SIGCHLD) {
                         while (waitpid(-1, NULL, WNOHANG) > 0);
                     }

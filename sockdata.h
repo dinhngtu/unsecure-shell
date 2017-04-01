@@ -10,7 +10,8 @@ typedef enum unsh_sockettype {
     SOCKETTYPE_SERVER,
     SOCKETTYPE_CLIENT,
     SOCKETTYPE_PROC_IN,
-    SOCKETTYPE_PROC_OUT
+    SOCKETTYPE_PROC_OUT,
+	SOCKETTYPE_SIGNAL
 } unsh_sockettype;
 
 typedef enum unsh_sockaff_client_state {
