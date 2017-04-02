@@ -127,6 +127,16 @@ int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
                 close(after[1]);
             }
 
+            sigset_t sigset;
+            if (sigemptyset(&sigset) != 0) {
+                perror("cannot initialize signal set");
+                return 1;
+            }
+            if (sigprocmask(SIG_SETMASK, &sigset, NULL) != 0) {
+                perror("cannot unmask signals before exec");
+                return 1;
+            }
+
             execvp(current[0], current);
             perror("cannot exec");
             return -1;
