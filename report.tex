@@ -1,0 +1,161 @@
+% !TEX TS-program = xelatex
+% !TEX encoding = UTF-8
+
+% Header {{{1
+
+% This is a simple template for a XeLaTeX document using the "article" class,
+% with the fontspec package to easily select fonts.
+
+%\documentclass[11pt]{article} % use larger type; default would be 10pt
+\documentclass[12pt]{article}
+
+\usepackage{fontspec} % Font selection for XeLaTeX; see fontspec.pdf for documentation
+\defaultfontfeatures{Mapping=tex-text} % to support TeX conventions like ``---''
+\usepackage{xunicode} % Unicode support for LaTeX character names (accents, European chars, etc)
+\usepackage{xltxtra} % Extra customizations for XeLaTeX
+
+%\setmainfont{Charis SIL} % set the main body font (\textrm), assumes Charis SIL is installed
+%\setsansfont{Deja Vu Sans}
+%\setmonofont{Deja Vu Mono}
+
+% other LaTeX packages.....
+\usepackage{geometry} % See geometry.pdf to learn the layout options. There are lots.
+\geometry{a4paper, left=25mm, right=25mm, top=25mm, bottom=25mm} % or letterpaper (US) or a5paper or....
+\usepackage[parfill]{parskip} % Activate to begin paragraphs with an empty line rather than an indent
+
+\usepackage{graphicx} % support the \includegraphics command and options
+\usepackage{subcaption}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\usepackage{authblk}
+
+\usepackage{listings}
+\lstset{basicstyle=\ttfamily,columns=fullflexible,keepspaces=true}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\title{Project report: USTH mini remote shell}
+\author[1]{Dinh Ngoc Tu}
+\affil[1]{Master M1 ICT -- University of Science and Technology of Hanoi}
+
+\renewcommand\Affilfont{\itshape\small}
+
+\begin{document}
+\maketitle
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Introduction}
+
+This report documents the implementation of the USTH mini remote shell written in C. The software contains two parts:
+
+\begin{itemize}
+\item A server program for accepting connections and executing provided commands;
+\item A client program that takes commands from the user and sends it to the server, then display their output.
+\end{itemize}
+
+This report contains these sections:
+
+\begin{itemize}
+\item Implementation of the server program
+\item Implementation of the client program
+\item A short demonstration
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Implementation of the server program}
+
+The server program uses the following startup sequence:
+
+\begin{itemize}
+\item Firstly, the program registers a signalfd(2) instance for monitoring child processes through SIGCHLD. Before calling signalfd(), sigprocmask(2) is used to block the corresponding default signal handler. The program also masks SIGPIPE for custom handling and cleanup of pipes.
+\item Secondly, the program creates a non-blocking socket and listens for incoming connections.
+\item The program creates an epoll(7) instance and registers for notifications from the socket and signal file descriptors created above.
+\item The program starts its I/O event loop, and processes the corresponding events.
+\end{itemize}
+
+\subsection{The I/O event loop}
+
+The server's I/O event loop is based on epoll(7). For each file descriptor involved (e.g. server socket, client socket, signalfd), the server registers it along with some associated data, such as fd type, related file descriptors, I/O buffers, etc. It then continually calls epoll\_wait(2), which waits until file descriptor events become available for consumption, and processes each event synchronously.
+
+I/O events are handled as follows:
+
+\begin{itemize}
+\item File descriptors that encountered an error are closed.
+\item New connections are accepted, and their file descriptors registered with the epoll(7) instance.
+\item Signals sent to the process (currently SIGCHLD) are handled.
+\item Finished file descriptors are cleaned up, closed and their associated data freed.
+\item File descriptor reads/writes are handled.
+\end{itemize}
+
+\subsection{How command I/O is handled}
+
+When a command line is sent to the server, it is first parsed using a command line parser. The server then initializes inter-process pipelines using pipe(2), calls fork(2) and dup2(2) to spawn child processes connected through a pipeline, and finally exec(3) to execute each command in the command chain.
+
+The server supports input/output redirection from and into files. If I/O redirection is used, the requested file is opened with open(2) and connected to the child processes' corresponding standard file descriptor using dup2(2).
+
+The server continuously monitors command output using epoll(7) and sends these output to the client socket.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Implementation of the client program}
+
+The client program also uses an epoll(7)-based event loop for server connections:
+
+\begin{itemize}
+\item The program resolves the server address and creates a connect(2) socket.
+\item Both the socket and standard input are set to non-blocking mode for use in the event loop.
+\item The program starts the event loop, sending and receiving data from the server.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{A short demonstration of the software}
+
+We present a short transcription of a connection session from the client:
+
+\begin{lstlisting}
+$ ./unsh
+Enter hostname: localhost
+ls
+config.h
+Makefile
+readcmd.c
+readcmd.h
+readcmd.o
+sockdata.c
+sockdata.h
+sockdata.o
+trace
+unsh
+unsh.c
+unshd
+unshd.c
+unshd.o
+ls -la | grep read
+-rw-r--r-- 1 tu tu  6354 Apr  1 15:11 readcmd.c
+-rw-r--r-- 1 tu tu  1125 Apr  1 15:11 readcmd.h
+-rw-r--r-- 1 tu tu 12368 Apr  2 15:49 readcmd.o
+base64 < /etc/hosts > /tmp/test
+cat /tmp/test
+MTI3LjAuMC4xCWxvY2FsaG9zdAoxMjcuMC4xLjEJaG9tZXNlcnZlcgoKIyBUaGUgZm9sbG93aW5n
+IGxpbmVzIGFyZSBkZXNpcmFibGUgZm9yIElQdjYgY2FwYWJsZSBob3N0cwo6OjEgICAgIGxvY2Fs
+aG9zdCBpcDYtbG9jYWxob3N0IGlwNi1sb29wYmFjawpmZjAyOjoxIGlwNi1hbGxub2RlcwpmZjAy
+OjoyIGlwNi1hbGxyb3V0ZXJzCg==
+\end{lstlisting}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Conclusion}
+
+We have implemented a pair of server and client for a mini remote shell on Linux. The software uses non-blocking I/O and epoll(7) to process file descriptor events. However, improvements can be made by adding authentication and encryption to the software, as well as a complete framing protocol.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\end{document}
