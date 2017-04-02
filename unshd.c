@@ -33,12 +33,19 @@ int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
 
     // in case of io redir
     int redirfd[2] = {-1, -1};
+    int nullfd;
     // pipes for communicating with child processes
     int headpipe[2];
     int tailpipe[2];
     // pipeline chain
     int before[2], after[2];
     bool beginning = true;
+
+    nullfd = open("/dev/null", O_WRONLY);
+    if (nullfd < 0) {
+        perror("cannot open null stream");
+        return -1;
+    }
 
     // setup head-of-pipe and tail-of-pipe
     // if redirected to client then these must be non-blocking for use with epoll()
@@ -115,9 +122,11 @@ int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
                 // end of pipe
                 if (cmd->out) {
                     dup2(redirfd[1], 1);
+                    dup2(nullfd, 2);
                     close(redirfd[1]);
                 } else {
                     dup2(tailpipe[1], 1);
+                    dup2(tailpipe[1], 2);
                     close(tailpipe[0]);
                     close(tailpipe[1]);
                 }
@@ -126,6 +135,8 @@ int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
                 close(after[0]);
                 close(after[1]);
             }
+
+            close(nullfd);
 
             sigset_t sigset;
             if (sigemptyset(&sigset) != 0) {
@@ -142,6 +153,8 @@ int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
             return -1;
 
         } else if (pid > 0) {
+            close(nullfd);
+
             if (beginning) {
                 if (cmd->in) {
                     close(redirfd[0]);
