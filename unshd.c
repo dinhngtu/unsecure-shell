@@ -106,11 +106,8 @@ int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
             if (beginning) {
                 if (cmd->in) {
                     dup2(redirfd[0], 0);
-                    close(redirfd[0]);
                 } else {
                     dup2(headpipe[0], 0);
-                    close(headpipe[0]);
-                    close(headpipe[1]);
                 }
             } else {
                 dup2(before[0], 0);
@@ -118,22 +115,33 @@ int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
                 close(before[1]);
             }
 
+            if (cmd->in) {
+                close(redirfd[0]);
+            } else {
+                close(headpipe[0]);
+                close(headpipe[1]);
+            }
+
             if (!*seq) {
                 // end of pipe
                 if (cmd->out) {
                     dup2(redirfd[1], 1);
                     dup2(nullfd, 2);
-                    close(redirfd[1]);
                 } else {
                     dup2(tailpipe[1], 1);
                     dup2(tailpipe[1], 2);
-                    close(tailpipe[0]);
-                    close(tailpipe[1]);
                 }
             } else {
                 dup2(after[1], 1);
                 close(after[0]);
                 close(after[1]);
+            }
+
+            if (cmd->out) {
+                close(redirfd[1]);
+            } else {
+                close(tailpipe[0]);
+                close(tailpipe[1]);
             }
 
             close(nullfd);
