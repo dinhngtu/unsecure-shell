@@ -33,19 +33,12 @@ int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
 
     // in case of io redir
     int redirfd[2] = {-1, -1};
-    int nullfd;
     // pipes for communicating with child processes
     int headpipe[2];
     int tailpipe[2];
     // pipeline chain
     int before[2], after[2];
     bool beginning = true;
-
-    nullfd = open("/dev/null", O_WRONLY);
-    if (nullfd < 0) {
-        perror("cannot open null stream");
-        return -1;
-    }
 
     // setup head-of-pipe and tail-of-pipe
     // if redirected to client then these must be non-blocking for use with epoll()
@@ -69,24 +62,24 @@ int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
             perror("cannot open output file");
             return -1;
         }
-    } else {
-        if (pipe2(tailpipe, O_NONBLOCK) < 0) {
-            perror("cannot create tail pipe");
-            return -1;
-        }
+    }
 
-        struct epoll_event tpopts = {0};
-        tpopts.events = EPOLLIN | EPOLLRDHUP;
-        unsh_socket *tpsock = newsock(tailpipe[0], (unsh_sockettype)SOCKETTYPE_PROC_OUT, true);
-        tpsock->sockaff.proc_out.clientsock = clientsock;
-        tpopts.data.ptr = tpsock;
-        // we only monitor output side of pipe for now
-        // monitoring read side of pipe is not implemented yet
-        // writes returning EAGAIN may behave badly
-        if (epoll_ctl(epollfd, EPOLL_CTL_ADD, tailpipe[0], &tpopts) != 0) {
-            perror("cannot register child pipe events");
-            return -1;
-        }
+    if (pipe2(tailpipe, O_NONBLOCK) < 0) {
+        perror("cannot create tail pipe");
+        return -1;
+    }
+
+    struct epoll_event tpopts = {0};
+    tpopts.events = EPOLLIN | EPOLLRDHUP;
+    unsh_socket *tpsock = newsock(tailpipe[0], (unsh_sockettype)SOCKETTYPE_PROC_OUT, true);
+    tpsock->sockaff.proc_out.clientsock = clientsock;
+    tpopts.data.ptr = tpsock;
+    // we only monitor output side of pipe for now
+    // monitoring read side of pipe is not implemented yet
+    // writes returning EAGAIN may behave badly
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, tailpipe[0], &tpopts) != 0) {
+        perror("cannot register child pipe events");
+        return -1;
     }
 
     clientsock->sockaff.client.haspipe = true;
@@ -126,7 +119,7 @@ int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
                 // end of pipe
                 if (cmd->out) {
                     dup2(redirfd[1], 1);
-                    dup2(nullfd, 2);
+                    dup2(tailpipe[1], 2);
                 } else {
                     dup2(tailpipe[1], 1);
                     dup2(tailpipe[1], 2);
@@ -139,12 +132,10 @@ int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
 
             if (cmd->out) {
                 close(redirfd[1]);
-            } else {
-                close(tailpipe[0]);
-                close(tailpipe[1]);
             }
 
-            close(nullfd);
+            close(tailpipe[0]);
+            close(tailpipe[1]);
 
             sigset_t sigset;
             if (sigemptyset(&sigset) != 0) {
@@ -161,25 +152,6 @@ int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
             return -1;
 
         } else if (pid > 0) {
-            close(nullfd);
-
-            if (beginning) {
-                if (cmd->in) {
-                    close(redirfd[0]);
-                } else {
-                    close(headpipe[0]);
-                    // TODO: remove close() if headpipe[1] is ever used
-                    close(headpipe[1]);
-                }
-            }
-            if (!*seq) {
-                if (cmd->out) {
-                    close(redirfd[1]);
-                } else {
-                    // do not close tailpipe[0] in server since it is our epoll channel to the pipe chain
-                    close(tailpipe[1]);
-                }
-            }
             if (!beginning) {
                 close(before[0]);
                 close(before[1]);
@@ -193,6 +165,20 @@ int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
             return -1;
         }
     }
+
+    if (cmd->in) {
+        close(redirfd[0]);
+    } else {
+        close(headpipe[0]);
+        //close(headpipe[1]);
+    }
+
+    if (cmd->out) {
+        close(redirfd[1]);
+    }
+
+    //close(tailpipe[0]);
+    close(tailpipe[1]);
 
     return 0;
 }
@@ -232,7 +218,7 @@ int handle_client_read(int epollfd, struct epoll_event event) {
         char *buf = malloc(UNSH_BUFSIZE);
         // read from client socket and pump it to child stdin
         while ((thisread = read(fd, buf, UNSH_BUFSIZE)) > 0) {
-            write(client.childpipe[1], buf, thisread);
+            write(client.writeinfd, buf, thisread);
         }
         if (thisread == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             return 0;
@@ -412,10 +398,8 @@ int main() {
             } else if (evcode & EPOLLHUP || evcode & EPOLLRDHUP) {
                 switch (sockdt->socktype) {
                     case SOCKETTYPE_CLIENT:
-                        if (sockdt->sockaff.client.childpipe[0] >= 0) {
-                            // pipeline input is not implemented yet
-                            //close(sockdt->sockaff.client.childpipe[0]);
-                            //close(sockdt->sockaff.client.childpipe[1]);
+                        if (sockdt->sockaff.client.writeinfd >= 0) {
+                            close(sockdt->sockaff.client.writeinfd;
                         }
                         sockdt->sockaff.client.state = CLIENTSTATE_CLOSED;
                         epoll_ctl(epollfd, sockdt->fd, EPOLL_CTL_DEL, NULL);
