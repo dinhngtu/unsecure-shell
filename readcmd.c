@@ -40,6 +40,7 @@ static void *xrealloc(void *ptr, size_t size)
 
 
 /* Read a line from standard input and put it in a char[] */
+/*
 static char *readline(void)
 {
     size_t buf_len = 16;
@@ -63,6 +64,7 @@ static char *readline(void)
         if (fgets(buf + l, buf_len - l, stdin) == NULL) return buf;
     } while (1);
 }
+*/
 
 
 /* Split the string in words, according to the simple shell grammar. */

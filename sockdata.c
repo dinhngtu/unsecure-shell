@@ -6,7 +6,7 @@
 #include "config.h"
 #include "sockdata.h"
 
-static const char *unsh_sockettype_strings[] = {
+const char *unsh_sockettype_strings[6] = {
     "None",
     "Server",
     "Client",
@@ -26,8 +26,8 @@ unsh_socket *newsock(int fd, unsh_sockettype socktype, bool initialize) {
                 ret->sockaff.client.haspipe = false;
                 ret->sockaff.client.linebuf = malloc(UNSH_LINE_MAX + 1);
                 ret->sockaff.client.linelen = 0;
-                ret->sockaff.client.childpipe[0] = -1;
-                ret->sockaff.client.childpipe[1] = -1;
+                //ret->sockaff.client.readoutfd = -1;
+                ret->sockaff.client.writeinfd = -1;
                 break;
             case SOCKETTYPE_PROC_OUT:
                 ret->sockaff.proc_out.clientsock = NULL;

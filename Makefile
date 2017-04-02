@@ -1,6 +1,7 @@
 CFLAGS+=-Wall -Wextra -std=c99 -g
+TARGETS=unshd unsh slowpipe
 
-all: unshd unsh
+all: $(TARGETS)
 
 unshd: readcmd.o sockdata.o unshd.o
 	$(LINK.o) $^ $(LOADLIBES) $(LDLIBS) -o $@
@@ -8,4 +9,4 @@ unshd: readcmd.o sockdata.o unshd.o
 .PHONY: clean
 
 clean:
-	$(RM) *.o unshd unsh
+	$(RM) *.o $(TARGETS)

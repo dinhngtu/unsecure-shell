@@ -26,8 +26,13 @@ typedef struct unsh_sockaff_client {
     bool haspipe;
     char *linebuf;
     size_t linelen;
-    int childpipe[2];
+    //int readoutfd;
+    int writeinfd;
 } unsh_sockaff_client;
+
+typedef struct unsh_sockaff_proc_in {
+    unsh_socket *clientsock;
+} unsh_sockaff_proc_in;
 
 typedef struct unsh_sockaff_proc_out {
     unsh_socket *clientsock;
@@ -38,9 +43,12 @@ typedef struct unsh_socket {
     unsh_sockettype socktype;
     union {
         unsh_sockaff_client client;
+        unsh_sockaff_proc_in proc_in;
         unsh_sockaff_proc_out proc_out;
     } sockaff;
 } unsh_socket;
 
 unsh_socket *newsock(int fd, unsh_sockettype socktype, bool initialize);
 void freesock(unsh_socket *sock);
+
+const char *unsh_sockettype_strings[6];

@@ -74,9 +74,6 @@ int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
     unsh_socket *tpsock = newsock(tailpipe[0], (unsh_sockettype)SOCKETTYPE_PROC_OUT, true);
     tpsock->sockaff.proc_out.clientsock = clientsock;
     tpopts.data.ptr = tpsock;
-    // we only monitor output side of pipe for now
-    // monitoring read side of pipe is not implemented yet
-    // writes returning EAGAIN may behave badly
     if (epoll_ctl(epollfd, EPOLL_CTL_ADD, tailpipe[0], &tpopts) != 0) {
         perror("cannot register child pipe events");
         return -1;
@@ -171,6 +168,24 @@ int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
     } else {
         close(headpipe[0]);
         //close(headpipe[1]);
+
+        clientsock->sockaff.client.writeinfd = headpipe[1];
+        clientsock->sockaff.client.state = CLIENTSTATE_INPUT;
+
+        // we only monitor output side of pipe for now
+        // monitoring read side of pipe is not implemented yet
+        // writes returning EAGAIN may behave badly
+        /*
+        struct epoll_event hpopts = {0};
+        hpopts.events = EPOLLIN | EPOLLRDHUP;
+        unsh_socket *hpsock = newsock(headpipe[1], (unsh_sockettype)SOCKETTYPE_PROC_IN, true);
+        hpsock->sockaff.proc_in.clientsock = clientsock;
+        hpopts.data.ptr = hpsock;
+        if (epoll_ctl(epollfd, EPOLL_CTL_ADD, headpipe[1], &hpopts) != 0) {
+            perror("cannot register child input pipe events");
+            return -1;
+        }
+        */
     }
 
     if (cmd->out) {
@@ -183,17 +198,19 @@ int cmdspawn(int epollfd, unsh_socket *clientsock, struct cmdline *cmd) {
     return 0;
 }
 
-int handle_client_read(int epollfd, struct epoll_event event) {
-    unsh_socket *sockdt = event.data.ptr;
+int handle_client_read(int epollfd, unsh_socket *sockdt) {
     int fd = sockdt->fd;
     unsh_sockaff_client client = sockdt->sockaff.client;
 
     if (client.state == CLIENTSTATE_COMMAND) {
         ssize_t thisread;
-        char *lineptr = client.linebuf;
-        while (client.linelen < UNSH_LINE_MAX && (thisread = read(fd, lineptr, 1)) > 0) {
+        char *lineptr = client.linebuf + client.linelen;
+        while ((thisread = read(fd, lineptr, 1)) > 0) {
             char readed = *(char *)lineptr;
-            if (readed == '\r' || readed == '\n') {
+            if (client.linelen >= UNSH_LINE_MAX - 1) {
+                client.linelen = 0;
+                lineptr = client.linebuf;
+            } else if (readed == '\r' || readed == '\n') {
                 *lineptr++ = 0;
                 struct cmdline *cmd = readcmd(client.linebuf);
                 // luckily for us exec() won't mess up parent's epoll
@@ -231,17 +248,11 @@ int handle_client_read(int epollfd, struct epoll_event event) {
     }
 }
 
-int handle_proc_out_read(struct epoll_event event) {
+int handle_proc_out_read(unsh_socket *sockdt) {
     // TODO: use a constrained for loop rather than a while loop to avoid starving other fds
-    unsh_socket *sockdt = event.data.ptr;
     assert(sockdt->socktype == SOCKETTYPE_PROC_OUT);
 
     unsh_socket *clientsock = sockdt->sockaff.proc_out.clientsock;
-    assert(clientsock->socktype == SOCKETTYPE_CLIENT);
-    if (clientsock->sockaff.client.state == CLIENTSTATE_CLOSED) {
-        freesock(clientsock);
-        return 0;
-    }
 
     int fd = sockdt->fd;
     ssize_t thisread;
@@ -323,7 +334,7 @@ int main() {
     // register server socket gives us accept() notifications
     struct epoll_event ssopts = {0};
     ssopts.events = EPOLLIN;
-    ssopts.data.ptr = newsock(sockfd, (unsh_sockettype)SOCKETTYPE_SERVER, true);
+    ssopts.data.ptr = newsock(sockfd, SOCKETTYPE_SERVER, true);
     if (epoll_ctl(epollfd, EPOLL_CTL_ADD, sockfd, &ssopts) != 0) {
         perror("cannot set sockfd events");
         return 1;
@@ -360,7 +371,7 @@ int main() {
                     fprintf(stderr, "socket fd encountered unexpected error, quitting\n");
                     return 1;
                 }
-                epoll_ctl(epollfd, sockdt->fd, EPOLL_CTL_DEL, NULL);
+                epoll_ctl(epollfd, EPOLL_CTL_DEL, sockdt->fd, NULL);
                 close(sockdt->fd);
                 continue;
 
@@ -396,45 +407,68 @@ int main() {
                 }
 
             } else if (evcode & EPOLLHUP || evcode & EPOLLRDHUP) {
-                switch (sockdt->socktype) {
-                    case SOCKETTYPE_CLIENT:
-                        if (sockdt->sockaff.client.writeinfd >= 0) {
-                            close(sockdt->sockaff.client.writeinfd;
+                if (sockdt->socktype == SOCKETTYPE_CLIENT) {
+                    if (sockdt->sockaff.client.writeinfd >= 0) {
+                        if (close(sockdt->sockaff.client.writeinfd) != 0) {
+                            perror("error closing writeinfd");
                         }
+                    }
+                    if (epoll_ctl(epollfd, EPOLL_CTL_DEL, sockdt->fd, NULL) != 0) {
+                        perror("error unsetting client fd events");
+                    }
+                    if (close(sockdt->fd) != 0) {
+                        perror("error closing client fd");
+                    }
+                    if (sockdt->sockaff.client.haspipe) {
                         sockdt->sockaff.client.state = CLIENTSTATE_CLOSED;
-                        epoll_ctl(epollfd, sockdt->fd, EPOLL_CTL_DEL, NULL);
-                        close(sockdt->fd);
-                        if (!sockdt->sockaff.client.haspipe) {
-                            freesock(sockdt);
-                        }
-                        break;
-                    case SOCKETTYPE_PROC_OUT:
-                        // pipeline output is done
-                        // flush pipeline output to client first
-                        sockdt->sockaff.proc_out.clientsock->sockaff.client.haspipe = false;
-                        handle_proc_out_read(events[ei]);
-                        epoll_ctl(epollfd, sockdt->fd, EPOLL_CTL_DEL, NULL);
-                        close(sockdt->fd);
+                    } else {
                         freesock(sockdt);
-                        break;
-                    default:
-                        //close(sockdt->fd);
-                        break;
+                    }
+
+                } else if (sockdt->socktype == SOCKETTYPE_PROC_OUT) {
+                    // pipeline output is done
+                    unsh_socket *clientsock = sockdt->sockaff.proc_out.clientsock;
+                    assert(clientsock->socktype == SOCKETTYPE_CLIENT);
+
+                    if (clientsock->sockaff.client.state == CLIENTSTATE_CLOSED) {
+                        freesock(clientsock);
+                    } else {
+                        // flush pipeline output to client first
+                        handle_proc_out_read(sockdt);
+                        clientsock->sockaff.client.state = CLIENTSTATE_COMMAND;
+                        clientsock->sockaff.client.haspipe = false;
+                    }
+
+                    if (epoll_ctl(epollfd, EPOLL_CTL_DEL, sockdt->fd, NULL) != 0) {
+                        perror("error unsetting proc_out fd events");
+                    }
+                    if (close(sockdt->fd) != 0) {
+                        perror("error closing proc_out fd");
+                    }
+                    freesock(sockdt);
+
+                } else {
+                    fprintf(stderr, "rogue socket type %s\n", unsh_sockettype_strings[sockdt->socktype]);
+                    assert(0);
                 }
 
             } else if (evcode & EPOLLIN) {
-                switch (sockdt->socktype) {
-                    case SOCKETTYPE_CLIENT:
-                        handle_client_read(epollfd, events[ei]);
-                        break;
-                    case SOCKETTYPE_PROC_IN:
-                        // TODO?
-                        break;
-                    case SOCKETTYPE_PROC_OUT:
-                        handle_proc_out_read(events[ei]);
-                        break;
-                    default:
-                        break;
+                if (sockdt->socktype == SOCKETTYPE_CLIENT) {
+                    handle_client_read(epollfd, sockdt);
+
+                } else if (sockdt->socktype == SOCKETTYPE_PROC_IN) {
+
+                } else if (sockdt->socktype == SOCKETTYPE_PROC_OUT) {
+                    unsh_socket *clientsock = sockdt->sockaff.proc_out.clientsock;
+                    if (clientsock->sockaff.client.state != CLIENTSTATE_CLOSED) {
+                        handle_proc_out_read(sockdt);
+                    } else {
+                        epoll_ctl(epollfd, EPOLL_CTL_DEL, sockdt->fd, NULL);
+                        close(sockdt->fd);
+                        freesock(sockdt);
+                    }
+
+                } else {
                 }
 
             } else {
